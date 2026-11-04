@@ -1,0 +1,57 @@
+---
+title: "<Benchmark name>: <one-line claim being audited>"
+slug: "<url-safe-slug>"
+date: "YYYY-MM-DD"
+benchmark: "<benchmark name>"
+benchmarkOwner: "<org/person who publishes the benchmark>"
+taxonomyTags: ["<one or more ids from src/lib/taxonomy.ts>"]
+severity: "critical | high | medium | low"
+summary: "<one or two sentences, the finding in plain language>"
+evidence:
+  - "<link to repro repo/gist/commit>"
+  - "<link to the grader/harness source implicated>"
+outreachStatus: "not_contacted | awaiting_response | responded | no_response"
+outreachLog:
+  - date: "YYYY-MM-DD"
+    channel: "email | twitter | github issue"
+    note: "<what was sent / what came back>"
+draft: true
+---
+
+<!--
+This file is a template for the weekly audit pipeline, not a published post.
+Files in content/_templates/ are never read by src/lib/posts.ts (only
+content/posts/*.mdx is). Copy this into content/posts/ with draft removed
+once a finding has been reproduced and is ready for review.
+
+Required standard for every finding before it ships (see WORKFLOW.md):
+1. Reproduced, not asserted — a concrete repro (repo, command, diff, or
+   kill-chain) that someone else can run, not just a reading of the paper
+   or a vibe from the leaderboard.
+2. Outreach attempted — outreachStatus must not be "not_contacted" at
+   publish time. Give the benchmark owner a real window to respond before
+   the post goes out, except where immediate public disclosure is the
+   safer choice (e.g. an active, exploitable vulnerability).
+3. Severity is argued, not asserted — the body must say why this severity
+   and not one above or below it.
+-->
+
+## What's being claimed
+
+<!-- What does the benchmark / leaderboard / paper say, verbatim or closely paraphrased, with a link. -->
+
+## What we found
+
+<!-- The reproduction. Show the actual command, diff, or trace. This is the load-bearing section. -->
+
+## Why it matters
+
+<!-- Scope the claim: does this affect the headline number, a subset of tasks, one grader, one model family? Don't overstate. -->
+
+## Response from <benchmarkOwner>
+
+<!-- Insert their reply verbatim if received, or "No response as of <date>; we reached out on <date> via <channel>." -->
+
+## What would fix it
+
+<!-- Concrete, specific. This is what separates an audit from a dunk. -->
