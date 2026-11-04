@@ -1,0 +1,42 @@
+---
+title: "APEX-Agents: exact filename matching silently zeros correct deliverables"
+slug: "apex-agents-filename-exact-match"
+date: "2026-11-04"
+benchmark: "APEX-Agents"
+benchmarkOwner: "Mercor"
+taxonomyTags: ["grader-strictness"]
+severity: "medium"
+summary: "In archipelago's output_llm grading path, a case-sensitive exact filename match decides whether a task's deliverable even reaches the LLM judge. A correct answer saved under a slightly different filename or path gets auto-failed at 0.0 with no semantic evaluation."
+evidence:
+  - "https://github.com/Mercor-Intelligence/archipelago/blob/main/grading/runner/evals/output_llm/main.py"
+  - "https://github.com/Mercor-Intelligence/archipelago/blob/main/grading/runner/evals/output_llm/artifact_filters.py"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+APEX-Agents (Mercor, [arXiv 2601.14242](https://arxiv.org/abs/2601.14242)) grades 480 long-horizon knowledge-work tasks by having an LLM judge compare an agent's deliverable against a gold output and rubric. The paper reports this judge hits 98.5% accuracy against a 747-criterion human-labeled set — a high bar, and one the methodology section defends carefully (see the project's [statistical-validity pass](/taxonomy#statistical-validity): 8 seeds per task, bootstrapped CIs, FDR-corrected significance tests, all genuinely rigorous).
+
+That 98.5% figure describes judge *accuracy when it's asked to judge*. It doesn't describe how often a task's deliverable reaches the judge at all.
+
+## What we found
+
+The harness, [Archipelago](https://github.com/Mercor-Intelligence/archipelago), is open source. In `grading/runner/evals/output_llm/main.py`, a verifier configured with `expected_output_files` first runs the agent's produced artifacts through `filter_artifacts_to_expected_outputs()` (`artifact_filters.py`). That function keeps an artifact only if its path is **exactly equal to, or ends with `/<name>`** for one of the configured expected names — case-sensitive, no normalization, and the code explicitly documents that it does *not* trim whitespace on the artifact side, reasoning that "leading and trailing spaces are legal in a filename... trimming one would let a name match a file it does not name."
+
+If zero artifacts survive that filter, `main.py` returns `no_deliverable_result()`: a hard 0.0 with `judge_grade: "fail"`, **without the LLM judge ever being invoked**.
+
+So an agent that correctly solves a task but saves its output as `Report_Final.xlsx` where the verifier expects `report_final.xlsx`, or in a differently-named subfolder, never gets semantically evaluated. It gets the same score as an agent that failed to produce anything at all.
+
+## Why it matters
+
+This is scoped, not universal — it only fires for verifiers using the `output_llm` eval type with a configured `expected_output_files` list. We don't have access to the gated `mercor/apex-agents` dataset, so we can't say what fraction of the 480 tasks use this path, and we're not claiming this explains any specific amount of the benchmark's ~24% Pass@1 ceiling. What we can say: wherever this path is used, it converts a naming convention into a correctness signal, and a model that is good at the underlying task but inconsistent about exact output naming is indistinguishable, in the score, from a model that failed outright.
+
+## Response from Mercor
+
+No response yet — outreach has not been sent. This post is a draft pending that step; see `outreachStatus` in the frontmatter.
+
+## What would fix it
+
+Two independent, low-cost options: (1) normalize/fuzzy-match filenames (case-insensitive, trimmed, or a small edit-distance tolerance) before falling back to a hard fail, or (2) when the exact-match filter finds nothing, still pass whatever artifacts *were* produced to the LLM judge with a note that the expected filename wasn't found, rather than skipping the judge entirely. Either would let the semantic judge — which the paper's own numbers say is reliable — actually see borderline cases instead of a hard-coded filter deciding for it.
