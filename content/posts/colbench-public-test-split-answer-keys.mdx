@@ -1,0 +1,55 @@
+---
+title: "ColBench: the test-split ground truth and hidden test cases are a public, unauthenticated file"
+slug: "colbench-public-test-split-answer-keys"
+date: "2026-11-05"
+benchmark: "ColBench"
+benchmarkOwner: "Meta FAIR / UC Berkeley"
+taxonomyTags: ["contamination"]
+severity: "high"
+summary: "ColBench's backend-task test split — including the exact ground-truth function and all hidden grading test cases for every task — sits at a public, unauthenticated HuggingFace URL. A single HTTP range request retrieves a complete labeled record without downloading the dataset or solving anything."
+evidence:
+  - "https://huggingface.co/datasets/facebook/collaborative_agent_bench/resolve/main/backend_tasks/test.jsonl"
+  - "https://github.com/facebookresearch/sweet_rl"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+ColBench (introduced in [SWEET-RL, arXiv:2503.15478](https://arxiv.org/abs/2503.15478), Meta FAIR / UC Berkeley) evaluates LLM agents on multi-turn collaborative tasks: an agent works with a simulated human collaborator over up to 10 turns, then submits a deliverable. For backend-programming tasks, success means passing 10 held-out unit tests against a hidden ground-truth implementation. The paper reports this as a genuine held-out test split — a benchmark of the agent's ability to solve the task, not retrieve the answer.
+
+## What we found
+
+The benchmark's own dataset repository, [`facebook/collaborative_agent_bench`](https://huggingface.co/datasets/facebook/collaborative_agent_bench) on HuggingFace, hosts `backend_tasks/test.jsonl` — a 117MB file containing the labeled test split — at a public, unauthenticated `resolve/main` URL. No login, no gated-dataset acceptance, no API key.
+
+<TraceViewer
+  title="ColBench backend task, test split, record #1"
+  source="https://huggingface.co/datasets/facebook/collaborative_agent_bench/resolve/main/backend_tasks/test.jsonl"
+  verdict={{ outcome: "fail", label: "answer key = first 4KB of a public URL", detail: "ground_truth + all 10 test_cases retrieved via one unauthenticated HTTP range request" }}
+  turns={[
+    { role: "system", content: "ColBench backend task, test split (backend_tasks/test.jsonl)" },
+    { role: "human", content: "Write a Python function that applies a fixed-point FIR filter to an input signal. The function should take the input signal, filter coefficients, word length, and fraction length as arguments. The output should be the filtered signal." },
+    { role: "agent", content: "curl -sL -r 0-4000 https://huggingface.co/datasets/facebook/collaborative_agent_bench/resolve/main/backend_tasks/test.jsonl" },
+    { role: "grader", content: "Response contains ground_truth (apply_fixed_point_fir_filter, full implementation) and test1–test10 verbatim, matching this record exactly." },
+  ]}
+/>
+
+A single range request for the first 4KB of the file — no full download, no authentication — returns one complete JSON record containing the task's `problem_description` (what the simulated human says), the full `ground_truth` Python function, and all 10 `test_cases` the grader runs against a submission. Every field the grader needs to score a task is sitting in the open on the benchmark's own host.
+
+This is the same pattern as the OfficeQA Pro v2 finding that prompted this project: an answer key reachable through a public HuggingFace dataset, not a theoretical contamination risk.
+
+## Why it matters
+
+ColBench's own reported numbers in the SWEET-RL paper aren't directly compromised by this — the paper's evaluation harness (`scripts/evaluate_code.py`) runs a local vLLM-served policy with no web access, so the agents being scored in the paper couldn't have fetched this file during evaluation. The exposure is for everyone downstream:
+
+- Anyone evaluating a tool-using or web-browsing agent against this public dataset — a realistic setup, since ColBench is positioned as a benchmark for exactly this class of agentic model — without first stripping web/retrieval access gets a benchmark that can't distinguish "solved the task" from "fetched the answer."
+- Passive pretraining contamination: this is an openly crawlable URL. Any model whose pretraining corpus includes an HTTP crawl of HuggingFace may have memorized test-split ground truths independent of any live retrieval at eval time.
+
+## Response from Meta FAIR / UC Berkeley
+
+No response yet — outreach has not been sent. This post is a draft pending that step; see `outreachStatus` in the frontmatter.
+
+## What would fix it
+
+Gate the test split the way many benchmarks already do: require a license-acceptance click-through on HuggingFace (the standard "gated dataset" mechanism), or publish only a canonicalized/hashed form of `ground_truth` and `test_cases` with the real values served from an authenticated eval endpoint. Either removes the file from being openly crawlable while leaving the train split and methodology fully public.
