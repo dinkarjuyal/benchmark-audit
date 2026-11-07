@@ -42,7 +42,29 @@ Required standard for every finding before it ships (see WORKFLOW.md):
 
 ## What we found
 
-<!-- The reproduction. Show the actual command, diff, or trace. This is the load-bearing section. -->
+<!--
+The reproduction. Show the actual command, diff, or trace. This is the
+load-bearing section.
+
+For a multi-turn trace (agent/user/grader transcript), embed it with the
+TraceViewer component instead of pasting raw JSON — it renders turns as a
+collapsible transcript with a pass/fail/score badge. Example:
+
+<TraceViewer
+  title="Task #142, episode 3"
+  source="https://huggingface.co/datasets/.../episode_142.json"
+  verdict={{ outcome: "fail", label: "0 / 10 tests", detail: "agent never asked about the edge case the gold solution handles" }}
+  turns={[
+    { role: "human", content: "Write a function that merges two sorted lists." },
+    { role: "agent", content: "def merge(a, b): ..." },
+    { role: "grader", content: "9/10 tests passed. Failed: test_empty_input" },
+  ]}
+/>
+
+Keep embedded traces short and specific to the finding (one or two episodes),
+not a full dump of the dataset.
+-->
+
 
 ## Why it matters
 

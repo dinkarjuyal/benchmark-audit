@@ -4,6 +4,7 @@ import { MDXRemote } from "next-mdx-remote/rsc";
 import { getAllPosts, getPostBySlug } from "@/lib/posts";
 import { getCategory } from "@/lib/taxonomy";
 import { SeverityBadge, TagBadge } from "@/components/badge";
+import { TraceViewer } from "@/components/trace-viewer";
 
 export function generateStaticParams() {
   return getAllPosts().map((post) => ({ slug: post.slug }));
@@ -65,7 +66,11 @@ export default async function PostPage({
       </dl>
 
       <div className="prose prose-neutral mt-8 max-w-none dark:prose-invert">
-        <MDXRemote source={post.content} />
+        <MDXRemote
+          source={post.content}
+          components={{ TraceViewer }}
+          options={{ blockJS: false }}
+        />
       </div>
 
       {post.evidence.length > 0 && (
