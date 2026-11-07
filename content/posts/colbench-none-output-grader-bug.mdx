@@ -1,0 +1,56 @@
+---
+title: "ColBench: a correct answer scores zero on any test case whose ground truth is None"
+slug: "colbench-none-output-grader-bug"
+date: "2026-11-05"
+benchmark: "ColBench"
+benchmarkOwner: "Meta FAIR / UC Berkeley"
+taxonomyTags: ["grader-strictness"]
+severity: "medium"
+summary: "ColBench's grading function never credits a test case whose correct output is None — an ordinary Python pattern (not-found, early return, no match). A byte-for-byte copy of the ground-truth function scores below 1.0 whenever any of its test cases expects None, and this feeds directly into SWEET-RL's own RL training signal."
+evidence:
+  - "https://github.com/facebookresearch/sweet_rl/blob/main/sweet_rl/utils/code_utils.py"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+ColBench's backend-programming track grades a submission by running it against 10 held-out unit tests and reporting the fraction that pass. This fractional score is used both to report leaderboard success rates and — since ColBench is the training environment for SWEET-RL — as the reward signal during RL training itself.
+
+## What we found
+
+The actual, live grading path (`check_correctness()` in [`sweet_rl/utils/code_utils.py`](https://github.com/facebookresearch/sweet_rl/blob/main/sweet_rl/utils/code_utils.py), called by `code_evaluate()`, which is the only thing `scripts/evaluate_code.py` does) decides a test case is correct with:
+
+```python
+if ground_truth_output == test_output and ground_truth_output is not None:
+    num_correct += 1
+```
+
+The `and ground_truth_output is not None` clause means: whenever the *correct* answer for a test case is `None` — an entirely ordinary Python return value for "not found," an early exit, or no match — **no submission, however correct, can ever be credited for that test case.** Not even the ground-truth function itself, copied verbatim.
+
+<TraceViewer
+  title="Minimal repro of the None-output grading bug"
+  verdict={{ outcome: "score", label: "0.5 / 1.0", detail: "a byte-identical copy of the ground truth scores 50%, solely because one correct answer is None" }}
+  turns={[
+    { role: "human", content: "Write find_first_negative(nums): return the first negative in nums, or None if there isn't one." },
+    { role: "agent", content: "def find_first_negative(nums):\n    for n in nums:\n        if n < 0:\n            return n\n    return None" },
+    { role: "grader", content: "test1 find_first_negative([1,2,3]) -> ground truth None, agent output None -> NOT counted (ground_truth_output is not None check fails)\ntest2 find_first_negative([1,-2,3]) -> ground truth -2, agent output -2 -> counted\nscore: 1/2 = 0.5" },
+  ]}
+/>
+
+This was run, not just read: the comparison logic above was copied verbatim into a standalone script and executed against a ground-truth function identical to the submitted answer. Result: 0.5, not 1.0, for a submission that is correct on every test case.
+
+**Scope:** a static search over the real eval set (`facebook/collaborative_agent_bench/backend_tasks/test.jsonl`, 10,000 tasks) for ground-truth source containing the literal string `"return None"` found **31/10,000 tasks (0.31%)**. This is a hard floor, not the true rate — it misses implicit `None` returns (falling off the end of a function body, a variable that holds `None`, etc.), so the real affected fraction is higher.
+
+## Why it matters
+
+This doesn't touch the raw arithmetic behind SWEET-RL's headline comparison (see the project's [statistical-validity pass](/taxonomy#statistical-validity) on this same benchmark) — every method being compared is scored by the same grader, so the bias is shared across the comparison, not a thumb on the scale for one method over another. But it's a real, structural false negative, not just an eval-reporting quirk: because ColBench's score is also the RL reward signal in SWEET-RL, every affected task silently caps the achievable training reward below 1.0 regardless of policy quality, for as long as the policy is actually correct on the None-output cases specifically.
+
+## Response from Meta FAIR / UC Berkeley
+
+No response yet — outreach has not been sent. This post is a draft pending that step; see `outreachStatus` in the frontmatter.
+
+## What would fix it
+
+Drop the `and ground_truth_output is not None` clause, or replace it with an explicit sentinel comparison that distinguishes "test case errored" (where skipping makes sense) from "test case's correct answer happens to be None" (where it should score normally). A one-line fix in `check_correctness()`.
