@@ -18,11 +18,11 @@ export default function Home() {
         </h1>
         <p className="mt-4 max-w-2xl text-base text-muted">
           Leaderboards get taken at face value far more often than they
-          deserve to be. This is a running audit of where real benchmarks and
-          evals break — broken graders, leaked answer keys, isolation
-          claims that don&apos;t hold, format gating, harness bugs dressed up
-          as capability limits — backed by a reproduction for every
-          finding, and a right of reply for every subject.
+          deserve to be. This is a running audit of where benchmarks and
+          evals actually break: broken graders, leaked answer keys,
+          isolation claims that don&apos;t hold, format gating, harness bugs
+          dressed up as capability limits. Every finding gets reproduced.
+          Every subject gets a right of reply.
         </p>
         <div className="mt-6 flex gap-3 text-sm">
           <Link

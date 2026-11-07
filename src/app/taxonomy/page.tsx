@@ -16,7 +16,7 @@ export default function TaxonomyPage() {
       <p className="mt-3 max-w-2xl text-sm text-muted">
         Every audit here is tagged against this list. It starts at seven
         categories and only grows when a finding doesn&apos;t fit any
-        existing one — categories are never split or merged to flatter a
+        existing one. Categories never get split or merged to flatter a
         finding.
       </p>
 
