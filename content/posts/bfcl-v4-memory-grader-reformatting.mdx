@@ -1,0 +1,95 @@
+---
+title: "BFCL v4: the memory grader rejects answers stated in its own source text"
+slug: "bfcl-v4-memory-grader-reformatting"
+date: "2026-11-11"
+benchmark: "Berkeley Function Calling Leaderboard v4 (BFCL)"
+benchmarkOwner: "UC Berkeley (Gorilla project / Shishir Patil et al.)"
+taxonomyTags: ["grader-strictness"]
+severity: "medium"
+summary: "agentic_checker, the function that scores BFCL v4's memory category, requires an exact substring match against one hardcoded ground-truth string. In at least 6 of 155 memory test items, that string is a reformatted version of the time, date, or list the benchmark's own source conversation gives the model, so a model that answers in the benchmark's own words gets marked wrong."
+evidence:
+  - "https://github.com/ShishirPatil/gorilla/blob/main/berkeley-function-call-leaderboard/bfcl_eval/eval_checker/agentic_eval/agentic_checker.py"
+  - "https://github.com/ShishirPatil/gorilla/blob/main/berkeley-function-call-leaderboard/bfcl_eval/data/possible_answer/BFCL_v4_memory.json"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+The [Berkeley Function Calling Leaderboard](https://gorilla.cs.berkeley.edu/leaderboard) (BFCL), from UC Berkeley's Gorilla project, scores models on over 5,000 function-calling tasks across categories like simple calls, parallel calls, multi-turn agentic tool use, and (new in v4) a "memory" category: 155 base scenarios, each run against three different memory backends (`memory_kv`, `memory_vector`, `memory_rec_sum`), testing whether a model can store facts from a conversation and recall them correctly later.
+
+[Epoch AI reviewed BFCL v4](https://epoch.ai/benchmarks/berkeley-function-calling-leaderboard/review) in September 2026 and rated it "Flawed," citing defect rates from 20% up to 70% across categories after auditing a 50-item stratified sample — the memory category scored worst. Epoch's methodology stops once it has enough evidence for a "Flawed" rating; it doesn't itemize which specific items are broken or why. That's the gap this audit closes for one concrete mechanism.
+
+## What we found
+
+Memory-category items aren't scored by the multi-turn state checker the rest of the benchmark uses. They go through a separate path: `agentic_runner` → `_evaluate_single_agentic_entry` → `agentic_checker`, in `bfcl_eval/eval_checker/agentic_eval/agentic_checker.py`. That function does one thing: lowercase both strings, strip a fixed set of punctuation (`,./-_*^()`), and regex-search for the ground-truth string as a whole-word substring of the model's response.
+
+```python
+def standardize_string(input_string: str):
+    regex_string = r"[\,\.\/\-\_\*\^\(\)]"
+    return re.sub(regex_string, "", input_string).lower().replace("'", '"')
+
+def agentic_checker(model_response: str, possible_answer_list: list[str]) -> dict:
+    standardized_possible_answer_list = [
+        standardize_string(a) for a in possible_answer_list
+    ]
+    standardized_model_response = standardize_string(model_response)
+    for possible_answer in standardized_possible_answer_list:
+        if re.search(rf"\b{re.escape(possible_answer)}\b", standardized_model_response):
+            return {"valid": True, "error": []}
+    return {"valid": False, ...}
+```
+
+That's a reasonable approach when the ground truth is stated plainly in the conversation. The problem is that for a measurable slice of the 155 memory items, it isn't. Take `memory_40-healthcare-10`, a real scored entry in `BFCL_v4_memory.json`:
+
+```json
+{
+  "id": "memory_40-healthcare-10",
+  "ground_truth": ["03:00 PM"],
+  "source": "I avoid caffeine after 3 PM, keep my bedroom cool and dark, and read a book before bed instead of looking at my phone."
+}
+```
+
+The model is given a conversation where the user says "3 PM." The grader demands the exact substring "03:00 PM": leading zero, colon, minutes, all added by whoever wrote the ground truth, none of it present anywhere in what the model actually saw. We ran the real `agentic_checker`/`standardize_string` functions (copied verbatim, zero third-party dependencies) against this exact test case:
+
+```
+ground_truth required by grader: ['03:00 PM']
+source conversation text:        "I avoid caffeine after 3 PM, ..."
+
+model answer: '3 PM'                           -> valid=False
+model answer: 'You avoid caffeine after 3 PM.' -> valid=False
+model answer: '3:00 PM'                        -> valid=False
+model answer: '03:00 PM'                       -> valid=True
+```
+
+A model that answers with the benchmark's own words (the most faithful, least hallucination-prone thing it could do) fails. Only a model that happens to guess Berkeley's specific reformatting convention passes.
+
+This isn't a one-off. Scanning all 155 memory entries for cases where the required ground-truth string doesn't appear (even after standardization) anywhere in the source conversation surfaces the same pattern repeatedly:
+
+| id | ground truth required | what the source actually says |
+|---|---|---|
+| `memory_40-healthcare-10` | `03:00 PM` | "after **3 PM**" |
+| `memory_64-finance-9` | `05:30 AM` | "mornings start at **5:30 AM**" |
+| `memory_125-student-45` | `06:30 AM` | "wake up around **6:30** in the morning" |
+| `memory_130-notetaker-0` | `08:00 AM` | "Drop-off at **8 AM**" |
+| `memory_137-notetaker-7` | `05:00 PM` | "pick-up at **5 PM**" |
+| `memory_76-finance-21` | `Adaptability, Discipline, Relationships` | "comes down to ... **discipline, adaptability, and relationships**" |
+
+The last row is a second, distinct failure mode of the same bug: the ground truth isn't just reformatted, it's reordered. The source lists "discipline, adaptability, and relationships"; the grader hardcodes the single string "Adaptability, Discipline, Relationships" and requires that exact sequence as a contiguous substring. A model that correctly recalls all three traits in the source's own order fails, because `agentic_checker` does one substring search against one fixed ordering — it has no multiset or any-order comparison.
+
+Tellingly, the benchmark's authors clearly know this class of problem exists: two other memory entries (`memory_81-student-1`, `memory_152-notetaker-22`) list *two* accepted ground-truth strings each (`["One", "1"]` and `["3", "Three"]`) specifically to cover numeral-vs-word phrasing. That's the right fix, applied inconsistently — it just wasn't extended to time formatting or list ordering.
+
+## Why it matters
+
+This affects the "memory" category specifically, not BFCL v4's full 5,088-item suite, and within memory it affects a minority of items, not all of them: our conservative scan (ground truth entirely absent from the source text, even after punctuation-stripping and case-folding) found 16 of 155 base scenarios affected, of which at least 6 are unambiguous reformatting/reordering bugs rather than legitimate inference-from-context questions. Since each of the 155 base scenarios is run against all three memory backends (`memory_kv`, `memory_vector`, `memory_rec_sum`), that's roughly 18 of the category's ~465 scored items — around 4% of the memory category — failing regardless of whether the model's memory and recall are correct, for models that answer faithfully in the conversation's own wording. That's a real, structural drag on memory-category scores, consistent with Epoch's observation that this category is the benchmark's worst-scoring one, though it's one mechanism among others and not a full explanation of Epoch's reported 70% defect rate.
+
+Severity is "medium," not "high": it doesn't zero out a category (unlike a true 100%-failure bug would), and the surface fix is narrow — add accepted-answer variants, the way the benchmark already does for `memory_81-student-1` and `memory_152-notetaker-22`. It's "medium" rather than "low" because it's systematic (the same root cause recurs across unrelated scenarios — healthcare, finance, student, notetaker) and because it penalizes the specific behavior a well-calibrated agent should exhibit: answering in the terms it was actually given, rather than in a format it has to guess.
+
+## Response from UC Berkeley (Gorilla project / Shishir Patil et al.)
+
+No response as of 2026-11-11; outreach has not yet been attempted.
+
+## What would fix it
+
+Extend the pattern the benchmark already uses in a few entries (`memory_81-student-1`, `memory_152-notetaker-22`) to every ground-truth answer derived from a time, date, or multi-item list: generate the accepted-answer set programmatically from the source text's own phrasing (and common reformattings of it — with/without leading zero, with/without colon, each permutation of a short list) rather than hand-writing one normalized string per item. A quick static pass — for every memory ground-truth entry, check whether a punctuation- and case-normalized version of it appears in the source text, and if not, either fix the ground truth to match the source or add the source's own phrasing as an additional accepted answer — would have caught all 6 cases above without needing a single model run.
