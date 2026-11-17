@@ -7,10 +7,21 @@ project.
 
 ## Status as of this writing
 
-Scaffold only. The site builds and deploys; `content/posts/` is empty by
-design (see root decisions below). The pipeline described here is **not yet
-wired up** — no CronCreate routine exists yet. Next concrete step:
-implement the routine described in "Automation" below.
+Live. Five posts have shipped (APEX-Agents, three ColBench findings, BFCL
+v4). The automation described in "Automation" below is wired up as a
+daily scheduled routine (`benchmark-audit-daily`) plus a weekly
+self-review routine (`benchmark-audit-meta-review`) — see AUDIT_SYSTEM.md
+for how the daily run organizes itself into roles (PM/Engineer/QA) and
+what the weekly Meta run is and isn't allowed to change.
+
+Note on cadence: the root decision below says "weekly cadence at most" for
+the *publish* gate, not the pick attempt. The daily routine attempts a
+pick every day but guard-checks for an already-open unmerged `audit/*` PR
+and no-ops if one exists, so actual publish cadence is still capped by how
+fast the repo owner reviews — daily picking doesn't mean daily shipping.
+This was an explicit, informed decision to revisit the original
+"daily-cadence benchmark takes are usually wrong" framing below; it's
+recorded here rather than silently overridden.
 
 ## Root decisions already made (don't re-litigate these)
 
@@ -68,13 +79,22 @@ written. Re-opening these needs a real reason, not just revisiting:
 If no finding survives reproduction in a given week, no PR goes out that
 week. Silence is an acceptable output; a weak post is not.
 
-## Automation (not yet built)
+## Automation (built)
 
-Planned: a weekly `CronCreate` scheduled routine that runs steps 1–4
-above as a Claude Code session with `gh`/git access, authenticated the same
-way this scaffolding session was (existing `gh auth` on this machine).
-It should stop and leave a draft/issue rather than open a PR if nothing
-reproducible turns up that week, and it should never merge its own PR.
+Two cloud routines, both on `dinkarjuyal/benchmark-audit`:
+
+- **`benchmark-audit-daily`** — runs daily, guard-checks for an open
+  `audit/*` PR (no-ops if found), otherwise runs steps 1–2 above organized
+  into the PM/Engineer/QA roles in AUDIT_SYSTEM.md, and opens a PR with a
+  draft post if something survives QA, or an issue if nothing does after
+  two target attempts. Never merges its own PR, never does outreach.
+- **`benchmark-audit-meta-review`** — runs weekly, reviews the past week's
+  PR/issue activity from the daily routine, and proposes refinements to
+  AUDIT_SYSTEM.md's tunable policy (never its fixed guardrails) via its
+  own PR. Never merges its own PR either.
+
+Outreach (step 3 above) is intentionally not automated anywhere — it stays
+a separate, explicitly human-initiated action.
 
 ## Post schema
 
