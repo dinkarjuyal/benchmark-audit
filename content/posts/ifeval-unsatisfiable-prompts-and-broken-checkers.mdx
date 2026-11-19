@@ -1,0 +1,82 @@
+---
+title: "IFEval: five prompts can't be passed, and two checkers don't check what they claim"
+slug: "ifeval-unsatisfiable-prompts-and-broken-checkers"
+date: "2026-11-19"
+benchmark: "IFEval (Instruction-Following Eval)"
+benchmarkOwner: "Google Research"
+taxonomyTags: ["task-validity", "harness-bugs", "grader-strictness"]
+severity: "low"
+summary: "Three independent, reproduced defects in IFEval's 541-prompt set and its own grading code: 5 prompts pair a 'repeat this verbatim' instruction with a second instruction the repeated text already violates, making them mathematically unsatisfiable; the letter_frequency checker silently substitutes an unseeded random letter whenever the dataset gives it a punctuation character instead of a-z; and the English-capital-letters checker's language gate misclassifies short, correct, all-caps English answers as non-English."
+evidence:
+  - "https://github.com/google-research/google-research/blob/e2c3f9b85ff9804147541060bf35d68bf14f2258/instruction_following_eval/instructions.py"
+  - "https://github.com/google-research/google-research/blob/e2c3f9b85ff9804147541060bf35d68bf14f2258/instruction_following_eval/data/input_data.jsonl"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+[IFEval](https://github.com/google-research/google-research/tree/master/instruction_following_eval) scores a model's ability to follow verifiable formatting instructions ("no commas," "exactly 3 bullet points," "all capital letters") across 541 prompts, each paired with one or more programmatic checkers in `instructions.py`. It's widely used as a sub-benchmark inside larger suites (Open LLM Leaderboard, HELM, many model cards) precisely because it promises to be mechanical and unambiguous: a checker either finds the pattern or it doesn't. This audit tests that promise directly against the checkers' own source and the real 541-row dataset, not a reading of the paper.
+
+## What we found
+
+Three separate, independently reproduced defects, each isolated to specific rows or a specific checker class.
+
+**1. Five prompts are provably unsatisfiable.** `combination:repeat_prompt` requires the response to start, verbatim, with the original prompt text. Its checker, `RepeatPromptThenAnswer.check_following`, scans the *entire* response string for this; checkers for paired instructions like `punctuation:no_comma`, `keywords:forbidden_words`, and `keywords:frequency` also scan the entire response string, with no carve-out for a required repeated-prompt prefix. When the prompt text itself contains a comma, a word it tells the model to avoid, or a keyword at a frequency the model is told to stay under, satisfying the repeat instruction automatically violates the paired one. We copied all four `check_following` methods verbatim from the real source and scanned all 541 rows of the real dataset for this conflict:
+
+```
+total rows scanned: 541
+rows with combination:repeat_prompt paired with an already-violated instruction: 5
+  key 1627: ['no_comma']          # prompt itself contains a comma
+  key 3369: ["frequency(keyword='right')"]   # "right" appears twice in the prompt itself
+  key 3371: ["forbidden_words=['economy', 'demand', 'supply']"]  # forbidden words named in the prompt
+  key 3718: ['no_comma']
+  key 374: ["forbidden_words=['youngins', 'damn']"]
+```
+
+Key 3371 is the starkest case: the prompt says *"Exclude the words 'economy', 'demand' and 'supply'"* while also requiring the response to open with that exact sentence repeated word for word. No response, from any model, can pass both.
+
+**2. The letter-frequency checker throws away its own input.** `keywords:letter_frequency` is supposed to check how often a given letter appears. Its `build_description` validates the dataset's `letter` kwarg, but only accepts single a-z/A-Z characters: anything else falls through to `self._letter = random.choice(list(string.ascii_letters))`, an unseeded, uncontrolled substitution. Two real dataset rows ask it to count a punctuation mark instead (`letter: "#"` for hashtags, key 1122; `letter: "!"` for exclamation points, key 1129), which both fail that validation. We copied the class verbatim and ran it 2,000 times against one fixed, unchanged response:
+
+```
+dataset's intended letter: '#' (ignored -- not a-z)
+distinct substituted letters across 2000 fresh builds: 26
+5 most common substituted letters: [('m', 95), ('t', 91), ('s', 87), ('b', 86), ('w', 85)]
+same fixed response passes: 626/2000 runs  (31.3%)
+```
+
+The exact same model output passes or fails depending on which of the 26 letters the grader happens to roll that run, not on anything the model wrote.
+
+**3. The English-language gate fails short, correct English answers.** `change_case:english_capital` requires `value.isupper() and langdetect.detect(value) == "en"`. `langdetect` is a statistical classifier that's unreliable on short text, and `instructions.py` never calls `langdetect.DetectorFactory.seed(...)`, so its internal randomness is uncontrolled. Dataset key 1645 asks for a 10-word riddle, entirely in capitals: `"Create a riddle about the name Sheldon using only 10 words."` A plainly correct answer —
+
+```
+WHAT NAME BEGINS WITH SHE AND ENDS WITH DON? SHELDON.
+```
+
+— is valid, correctly capitalized English. Calling the real `langdetect.detect()` on it 50 times never once returns `"en"`:
+
+```
+len=   8  en=  0/50  all_results={'so': 50}   text='SHELDON.'...
+len=  53  en=  0/50  all_results={'de': 48, 'so': 2}  text='WHAT NAME BEGINS WITH SHE AND ENDS WITH DON? SHELD'...
+len=  67  en= 50/50  all_results={'en': 50}  text='YES, PRAYING CAN PROVIDE COMFORT AND REDUCE STRESS'...
+len= 323  en= 50/50  all_results={'en': 50}  text='WORLD WAR II WAS A GLOBAL CONFLICT THAT LASTED FRO'...
+```
+
+Short, all-caps responses are misclassified every time (always as "non-English," though which specific wrong language varies call to call); once the response passes roughly 60 characters, `langdetect` gets it right consistently. Of the 25 dataset rows using this checker, key 1645 is the one that explicitly asks for a short (10-word) response, which is exactly the regime the sweep above shows is unreliable.
+
+## Why it matters
+
+These are three structurally different bugs, not one mechanism repeated. Scoped to what's actually shown: 5 of 541 prompts (0.9%) are unconditionally unsatisfiable regardless of model quality; 2 of 541 (0.4%) are graded against an unseeded random letter instead of the one the dataset specifies; and 1 of 541 is a demonstrated case of a correct short answer being auto-rejected by a language-detection gate that only becomes reliable past a length threshold the prompt itself falls under (we checked this mechanism, not a model's real response, since IFEval's released response file is a different model's older run).
+
+None of these move a headline IFEval score by a measurable amount on their own; each is confined to a handful of rows. Severity is "low" for scope reasons. It isn't "trivial" because two of the three (the unsatisfiable prompts and the random-letter substitution) are structural: no model, however capable, can be scored correctly on those 7 rows, and the random-letter bug means the *same* model output can get a different verdict on different eval runs purely from grader noise, which is the kind of thing that looks like "run-to-run variance" in a paper's results table but is actually a specific, fixable bug.
+
+## Response from Google Research
+
+No response as of 2026-11-19; outreach has not yet been attempted.
+
+## What would fix it
+
+1. **Unsatisfiable prompts**: either drop the 5 rows (1627, 3718, 3371, 374, 3369) or edit their `prompt_to_repeat` text so it no longer contains the thing the paired instruction forbids.
+2. **Letter-frequency substitution**: change the two malformed rows (1122, 1129) to a real a-z letter the prompt is actually asking about, or extend `LetterFrequencyChecker` to accept punctuation characters instead of silently discarding them. Either fix is a few lines; the current behavior (fail validation, substitute unseeded randomness, never log or raise) is the part that should go regardless of which rows are fixed.
+3. **Language-gate false rejection**: call `langdetect.DetectorFactory.seed(0)` once at import time for determinism, and either exempt responses under some length threshold from the language check (the format compliance — all caps — is still checked), or swap in a detector with documented short-text behavior.
