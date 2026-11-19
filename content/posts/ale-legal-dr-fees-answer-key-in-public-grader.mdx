@@ -1,0 +1,74 @@
+---
+title: "Agents' Last Exam: one task's \"hidden reference\" is a plaintext constant in the public repo"
+slug: "ale-legal-dr-fees-answer-key-in-public-grader"
+date: "2026-11-18"
+benchmark: "Agents' Last Exam (ALE)"
+benchmarkOwner: "UC Berkeley RDI / RDI Foundation"
+taxonomyTags: ["contamination"]
+severity: "low"
+summary: "ALE markets 'hidden references' as part of its grading design, but the public scripts/score_outputs.py for legal/legal_dr_fees_01 ships the full numeric answer key as a plaintext constant. A submission built only from that file, never touching the staged case documents, scores 100%."
+evidence:
+  - "https://github.com/rdi-berkeley/agents-last-exam/blob/2e91edd3cd26baa35a38127c90c8e5241dfbe62f/tasks/legal/legal_dr_fees_01/scripts/score_outputs.py"
+  - "https://github.com/rdi-berkeley/agents-last-exam/blob/2e91edd3cd26baa35a38127c90c8e5241dfbe62f/tasks/legal/legal_dr_fees_01/main.py"
+  - "https://github.com/rdi-berkeley/agents-last-exam/blob/2e91edd3cd26baa35a38127c90c8e5241dfbe62f/docs/releases/v1.1-task-review.md"
+  - "https://github.com/rdi-berkeley/agents-last-exam/blob/2e91edd3cd26baa35a38127c90c8e5241dfbe62f/selected_tasks/v1.1_modified.txt"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+[Agents' Last Exam](https://agents-last-exam.org/) (ALE), led by UC Berkeley RDI and the RDI Foundation, bills itself as "the broadest-coverage agent evaluation benchmark to date": 55 subdomains across 13 industry clusters, graded on "verifiable outcomes" via, in the project's own words, **"hidden references + deterministic graders."** [Epoch AI rated ALE "Flawed"](https://epoch.ai/benchmarks) in its September 2026 review without itemizing every broken mechanism; this audit checks one specific, falsifiable claim behind the benchmark's grading story: that the reference answer a task is graded against is actually hidden from the agent attempting it.
+
+## What we found
+
+For `legal/legal_dr_fees_01` (BAC arbitration fee calculation across five cases), it isn't. The task prompt tells the agent to compute institution fees, arbitrator remuneration, and total fees from seven staged Chinese-language PDF documents, under an explicit "Closed-Book Rule": no web search, no outside knowledge, only the staged materials. `main.py` wires evaluation through a `reference_dir`/`answer_key_file` abstraction that reads like it's meant to stay out of the agent's sandbox, the same pattern ALE uses elsewhere to keep ground truth private.
+
+But the actual numbers aren't only in that private reference file. They're also hardcoded, in full, in the public repository, in `tasks/legal/legal_dr_fees_01/scripts/score_outputs.py`:
+
+```python
+ANSWER_KEY: dict[str, dict[str, Decimal]] = {
+    "case_1": {
+        "amount_in_dispute_rmb": Decimal("5800000.00"),
+        "institution_fee_rmb": Decimal("27100.00"),
+        "arbitrator_remuneration_rmb": Decimal("59000.00"),
+        "total_fee_rmb": Decimal("86100.00"),
+    },
+    "case_2": { ... },
+    "case_3": { ... },
+    "case_4": { ... },
+    "case_5": { ... },
+}
+```
+
+All five cases, all three graded fields each. We copied `score_submission()` verbatim (no third-party dependencies, no execution of any other code from the cloned repo) and ran it against three constructed submissions:
+
+```
+=== submission copied verbatim from the repo's own ANSWER_KEY constant ===
+score=1.0  points=100.0/100.0
+
+=== empty submission (no cases) ===
+score=0.0  points=0.0/100.0
+
+=== all-zero submission (wrong on every field) ===
+score=0.0  points=0.0/100.0
+```
+
+A submission built by reading one file in the public repo, never opening a single staged PDF, never doing a single arbitration-fee calculation, clears the task at a perfect score. The grader isn't broken in the sense of rejecting correct answers (the BFCL-style failure); it's broken in the sense that the thing it's supposedly checking for, closed-book calculation from staged source documents, can be skipped entirely by an agent (or a human assembling training data) with read access to the task package.
+
+Tellingly, ALE's own v1.1 release review shows the project already treats this exact failure mode as a defect class to fix. [`docs/releases/v1.1-task-review.md`](https://github.com/rdi-berkeley/agents-last-exam/blob/2e91edd3cd26baa35a38127c90c8e5241dfbe62f/docs/releases/v1.1-task-review.md) lists 57 modified tasks, and the recorded fixes repeat the same pattern over and over: "omit public score weights," "remove scoring weights and matching margins," "remove grading thresholds," "exclude public target logits," "remove worked solution recipes, reference self-checks and grader margins." That's a systematic hygiene pass for public files leaking grading information. `legal/legal_dr_fees_01` is in the scored task set (`selected_tasks/full.txt`, line 79) but does not appear in `selected_tasks/v1.1_modified.txt` — it wasn't touched by the pass that caught this exact bug elsewhere.
+
+## Why it matters
+
+This affects one task out of the 124 in ALE's full scored set (`selected_tasks/full.txt`), not the benchmark's headline methodology. In an equal-weighted aggregate across tasks, that's roughly 0.8% of the total score available for free, for any agent (or any pretraining/fine-tuning pipeline with web or repo access) that reads the public task package instead of solving the task.
+
+Severity is "low," not "medium" or "high": the scope is a single task, and the fix is narrow and already has a template, since ALE's own v1.1 process demonstrates the project knows how to find and remove exactly this kind of leak. It isn't "low" because the defect itself is mild, though: for this one task, the leak is total (100% of the available score, not a partial-credit edge case), and it directly undercuts a specific, publicly marketed claim ("hidden references") rather than an implicit assumption. The reason it doesn't move the needle on the overall leaderboard is purely arithmetic: 1 affected task among 124.
+
+## Response from UC Berkeley RDI / RDI Foundation
+
+No response as of 2026-11-18; outreach has not yet been attempted.
+
+## What would fix it
+
+Apply the same pass that already fixed 57 other tasks in v1.1 to this one: move `ANSWER_KEY` out of `scripts/score_outputs.py` (which ships in the public repo) and into the private `reference_dir` that `main.py`'s `answer_key_file` property already points at, leaving only the comparison logic (tolerance, field aliases, scoring arithmetic) in the public file. A single grep across the task tree for hardcoded per-case numeric constants in public `scripts/*.py` files, the same check implied by the v1.1 review's own fix descriptions, would catch this and the two other candidates with hardcoded expected-value constants we noticed but didn't reproduce in this pass (`visual_media/video_storyboard_001/scripts/evaluate_storyboard.py`, `life_sciences/tms_marrow_cell_type_annotation_instance_1/eval.py`) before the next release.
