@@ -1,0 +1,95 @@
+---
+title: "tau-bench: six gold action sequences break the benchmark's own written policy"
+slug: "tau-bench-gold-actions-violate-own-policy"
+date: "2026-11-20"
+benchmark: "tau-bench"
+benchmarkOwner: "Sierra Research"
+taxonomyTags: ["task-validity"]
+severity: "medium"
+summary: "Running the shipped gold actions against the shipped data and quoting the shipped policy text: airline tasks 26 and 27 cancel a reservation whose flights have already landed, airline task 10 cancels an uninsured economy booking outside the 24-hour window, and retail tasks 18, 91 and 108 'exchange' an item for itself, which the retail policy forbids. An agent that follows the policy fails these tasks; one that breaks it passes."
+evidence:
+  - "https://github.com/sierra-research/tau-bench/blob/59a200c6d575d595120f1cb70fea53cef0632f6b/tau_bench/envs/airline/tasks_test.py"
+  - "https://github.com/sierra-research/tau-bench/blob/59a200c6d575d595120f1cb70fea53cef0632f6b/tau_bench/envs/airline/wiki.md"
+  - "https://github.com/sierra-research/tau-bench/blob/59a200c6d575d595120f1cb70fea53cef0632f6b/tau_bench/envs/retail/tasks_test.py"
+  - "https://github.com/sierra-research/tau-bench/blob/59a200c6d575d595120f1cb70fea53cef0632f6b/tau_bench/envs/retail/wiki.md"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+[tau-bench](https://github.com/sierra-research/tau-bench) evaluates tool-using agents that must serve a simulated user while following a written domain policy (`wiki.md` for each of the retail and airline environments). A task passes when the final database state matches the state produced by the task's hand-written gold action sequence (plus any required output strings). The premise is that the gold sequence is what a policy-compliant agent should end up doing.
+
+## What we found
+
+We executed nothing from the repository. We loaded the shipped task files and data, and compared each gold action with the policy text in the same commit (`59a200c6d575d595120f1cb70fea53cef0632f6b`, the default branch as of this run). The script below is self-contained and reads only those files; its full output follows.
+
+```python
+# usage: python3 -I repro.py <path to tau-bench checkout @ 59a200c>
+import json, re, sys
+root = sys.argv[1] + "/tau_bench/envs/"
+def load(p):
+    class Action:
+        def __init__(s, name, kwargs): s.name, s.kwargs = name, kwargs
+    class Task:
+        def __init__(s, **k): s.__dict__.update(k)
+    src = re.sub(r'^from .*$|^import .*$', '', open(p).read(), flags=re.M)
+    ns = {'Action': Action, 'Task': Task}; exec(src, ns)
+    return ns.get('TASKS_TEST') or ns['TASKS']
+air = load(root + "airline/tasks_test.py"); ret = load(root + "retail/tasks_test.py")
+res = json.load(open(root + "airline/data/reservations.json"))
+fl = json.load(open(root + "airline/data/flights.json"))
+print("policy clock:", re.search(r"current time is ([^\n]+)", open(root + "airline/wiki.md").read()).group(1).strip())
+for i in (10, 26, 27, 34):
+    for a in air[i].actions:
+        if a.name == "cancel_reservation":
+            r = res[a.kwargs["reservation_id"]]
+            print(f"airline[{i}] cancel {a.kwargs['reservation_id']}: cabin={r['cabin']} insurance={r['insurance']} "
+                  f"created={r['created_at']} segments={[(f['flight_number'], f['date'], fl[f['flight_number']]['dates'][f['date']]['status']) for f in r['flights']]}")
+for i in (18, 91, 108):
+    for a in ret[i].actions:
+        if a.name == "exchange_delivered_order_items" and a.kwargs["item_ids"] == a.kwargs["new_item_ids"]:
+            print(f"retail[{i}] exchange order {a.kwargs['order_id']}: item_ids == new_item_ids == {a.kwargs['item_ids']}")
+same = lambda x, y: x.instruction == y.instruction and [(a.name, a.kwargs) for a in x.actions] == [(a.name, a.kwargs) for a in y.actions]
+print("retail[93] == retail[95] (instruction and gold actions identical):", same(ret[93], ret[95]))
+```
+
+```
+policy clock: 2024-05-15 15:00:00 EST.
+airline[10] cancel H9ZU1C: cabin=economy insurance=no created=2024-05-01T04:50:18 segments=[('HAT192', '2024-05-24', 'available'), ('HAT166', '2024-05-25', 'available')]
+airline[26] cancel NQNU5R: cabin=business insurance=no created=2024-05-13T05:37:57 segments=[('HAT214', '2024-05-13', 'landed'), ('HAT045', '2024-05-14', 'landed')]
+airline[27] cancel NQNU5R: cabin=business insurance=no created=2024-05-13T05:37:57 segments=[('HAT214', '2024-05-13', 'landed'), ('HAT045', '2024-05-14', 'landed')]
+airline[34] cancel XEHM4B: cabin=basic_economy insurance=no created=2024-05-01T05:17:41 segments=[('HAT005', '2024-05-20', 'available'), ('HAT178', '2024-05-30', 'available')]
+airline[34] cancel 59XX6W: cabin=economy insurance=yes created=2024-05-12T04:19:15 segments=[('HAT007', '2024-05-19', 'available'), ('HAT174', '2024-05-29', 'available')]
+retail[18] exchange order #W2890441: item_ids == new_item_ids == ['8069050545']
+retail[91] exchange order #W3239882: item_ids == new_item_ids == ['9494281769']
+retail[108] exchange order #W1304208: item_ids == new_item_ids == ['1615379700']
+retail[93] == retail[95] (instruction and gold actions identical): True
+```
+
+**Airline tasks 26 and 27: the gold cancels a trip that has already flown.** Both tasks' gold action is `cancel_reservation(NQNU5R)`. The policy states the clock as 2024-05-15 15:00 EST, and both segments of NQNU5R (2024-05-13 and 2024-05-14) are marked `landed` in `flights.json`. The airline policy says: "The agent can only cancel the whole trip that is not flown. If any of the segments are already used, the agent cannot help and transfer is needed." Business cabin means the insurance/24-hour rules are not the obstacle; the "not flown" rule is. The task instructions even call this an "upcoming" reservation. An agent that reads the status, refuses and transfers, as written, fails both tasks.
+
+**Airline task 10: the gold cancels an uninsured economy booking outside the 24-hour window.** Gold is `cancel_reservation(H9ZU1C)`. That reservation is economy, `insurance: no`, created 2024-05-01 (two weeks before the policy clock), with both flights `available` (the airline did not cancel). The policy: "All reservations can be cancelled within 24 hours of booking, or if the airline cancelled the flight. Otherwise, basic economy or economy flights can be cancelled only if travel insurance is bought and the condition is met, and business flights can always be cancelled. The rules are strict regardless of the membership status." None of the three exceptions applies. The task instruction pushes the agent into this branch ("if change is not possible, you want the agent to cancel").
+
+**Retail tasks 18, 91 and 108: the gold "exchanges" an item for the identical item.** Each gold call to `exchange_delivered_order_items` has `item_ids == new_item_ids` (e.g. order #W2890441, item 8069050545 for item 8069050545). The retail policy says an item "can be exchanged to an available new item of the same product but of different product option." The tool does not check this, so the call succeeds and the order flips to `exchange requested`. Task 18's whole gold sequence is this one call, and its instruction is a user who "change[s] your mind to exchange for the same item."
+
+**Lower-confidence items, not counted above:**
+
+- *Airline task 34* is arguable. The instruction has the user upgrade a basic-economy booking (XEHM4B) to economy and then cancel it; the gold does both. Upgrading is allowed by the policy, but the post-upgrade reservation is economy with no insurance, two-plus weeks old, so the quoted cancellation rule still seems to apply. This looks like a deliberate loophole probe, so we are not claiming it is an error, only that the gold's outcome is a cancellation the written rule does not seem to permit.
+- *Retail task 106*'s gold exchange fails inside the tool (the gift card balance of 17 is below the 21.10 price difference), and a failed call leaves the database unchanged, so the gold state equals the initial state. This is probably an intended "agent should refuse" task, but it is encoded as an erroring action rather than an empty one.
+- *Retail tasks 93 and 95* have identical instructions and identical gold actions.
+
+## Why it matters
+
+Severity is **medium**, argued from scope: these are 3 of the 50 airline test tasks and 3 of the 115 retail test tasks (about 3.6% of the 165 together), so no headline ranking moves on this alone. What makes them worth fixing is the direction of the error. On the affected tasks, the scoring rewards the agent that violates a policy the benchmark itself writes down, and penalizes the one that follows it. Since the benchmark's central metric is policy-compliant task completion, these tasks measure the opposite on a handful of rows. We did not run any model through them; we are only showing that the gold and the policy disagree. We also did not check whether these specific tasks are already fixed in some other fork or successor benchmark.
+
+Other things we looked at and are *not* claiming: tasks where the gold DB state equals the initial state (the "refuse" tasks) are by design; numeric output strings that match as substrings were not verified to cause false passes; and gold-order sensitivity in the reward check was not tested against any agent.
+
+## Response from Sierra Research
+
+No response yet: outreach has not been sent. This post is a draft pending that step; see `outreachStatus` in the frontmatter.
+
+## What would fix it
+
+Re-author these six tasks so the gold matches the policy: for airline 26/27, drop the flown reservation from the gold and have the expected outcome be a transfer; for airline 10, remove the cancel branch or use a reservation inside the 24-hour window; for retail 18/91/108, make the exchange target a different product option, or make the correct outcome a refusal. A cheap structural fix is to add the policy's own preconditions to the tools: `exchange_delivered_order_items` could reject `new_item_id == item_id`, and `cancel_reservation` could reject flown segments, so a gold sequence that violates them fails loudly at authoring time instead of silently scoring.
