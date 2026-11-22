@@ -1,0 +1,56 @@
+---
+title: "APEX-Agents: a same-named decoy file anywhere in the output hides the correct deliverable"
+slug: "apex-agents-golden-file-match-basename-collision"
+date: "2026-11-22"
+benchmark: "APEX-Agents"
+benchmarkOwner: "Mercor"
+taxonomyTags: ["grader-strictness", "harness-bugs"]
+severity: "medium"
+summary: "The golden_file_match verifier in Archipelago indexes both the golden snapshot and the agent's output by filename only, with 'shallowest path wins' as the tie-break for duplicate basenames. An agent that produces the fully correct deliverable, plus any unrelated file elsewhere in its workspace that happens to share its filename, gets scored 0.0 instead of 1.0 — the grader never looks at the correct file at all."
+evidence:
+  - "https://github.com/Mercor-Intelligence/archipelago/blob/0e77c3e135139d5b7bd7e177506cb46a6cc5b0ea/grading/runner/evals/golden_file_match/main.py"
+  - "https://github.com/Mercor-Intelligence/archipelago/blob/0e77c3e135139d5b7bd7e177506cb46a6cc5b0ea/grading/runner/evals/registry.py"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+This is a follow-up to our [earlier APEX-Agents finding](/posts/apex-agents-filename-exact-match) about the `output_llm` verifier's exact-filename gate. Archipelago, Mercor's open-source harness for APEX-Agents, ships many verifier types beyond `output_llm`. One of them, `golden_file_match`, exists specifically to be *more* forgiving than a raw diff: its own docstring says it supports "multiple valid end states" and normalizes volatile values "to prevent false mismatches from dynamic content." The implicit claim, backed by that docstring, is that a correct deliverable gets matched against the golden file reliably, regardless of incidental differences in the rest of the output.
+
+## What we found
+
+`_index_files_by_basename()` (`golden_file_match/main.py`) builds its comparison index by indexing *both* the golden snapshot and the agent's trajectory snapshot by filename alone, discarding directory path entirely. When two files in the same zip share a basename, the function's own comment states the tie-break: "Sort: shallowest path first (fewest slashes), then alphabetical" — and only the first (shallowest) one is kept; every other file with that basename is silently dropped from the index and never compared.
+
+That means the correct deliverable can be sitting at the path the task actually expects, byte-for-byte correct, and the grader never sees it — because some other, unrelated file elsewhere in the agent's output happens to have the same filename at a shallower path.
+
+We copied `_index_files_by_basename()` and `_compare_files()` verbatim and ran them against a constructed golden snapshot (one file, `deliverables/output.csv`, fixed content) and two trajectory snapshots differing only in whether an unrelated file at the workspace root also happens to be named `output.csv`:
+
+```
+=== agent with an unrelated shallow-path decoy file ===
+  score: 0.0
+  results: [{'file': 'output.csv', 'status': 'mismatch', 'golden_sha256': '54b54d1dddf6a25f', 'trajectory_sha256': 'c20a363ca0bdf886'}]
+
+=== agent with only the correct file, no decoy ===
+  score: 1.0
+  results: [{'file': 'output.csv', 'status': 'match'}]
+```
+
+Both trajectories contain the identical, correct `deliverables/output.csv`. The only difference is the presence of a second, unrelated `output.csv` at the workspace root in the first case. That alone flips the score from 1.0 to 0.0: the comparison is run entirely against the root-level decoy, and the actual correct file at `deliverables/output.csv` is never read.
+
+This isn't a hypothetical edge case confined to adversarial inputs. Long-horizon agentic tasks — the entire premise of APEX-Agents — routinely produce incidental files that share a name with a real deliverable: a tool's autosave, a backup copy made before a final edit, a template the agent copied into a scratch location and left in place, an earlier draft it moved rather than deleted. Any of these, if it happens to be shallower in the directory tree than the real output, silently overrides the real output in the eyes of this grader.
+
+## Why it matters
+
+This is scoped to tasks whose verifier config uses `golden_file_match` specifically; other verifier types in Archipelago (`output_llm`, `golden_response_match`, etc.) use different comparison logic and aren't affected by this particular bug. As with our earlier APEX-Agents post, we don't have access to the gated `mercor/apex-agents` dataset, so we can't say what fraction of the 480 tasks route through this verifier.
+
+Severity is "medium," matching the bar set by our earlier APEX-Agents finding: the mechanism is capable of converting a fully correct deliverable into a hard 0.0 score, with no partial credit and no signal to the agent or the evaluator about why. It isn't "high," because triggering it requires an incidental basename collision elsewhere in the output, something that won't happen on every task attempt — but it also isn't a contrived scenario, since multi-step agentic workflows are exactly the setting where stray same-named files accumulate. The failure direction only ever penalizes otherwise-correct work; we found no configuration under which this logic inflates a score for an incorrect deliverable.
+
+## Response from Mercor
+
+No response as of 2026-11-22; outreach has not yet been attempted.
+
+## What would fix it
+
+Index both the golden snapshot and the trajectory by full relative path first, falling back to basename-only matching only when a path-exact match isn't found anywhere in the trajectory — the inverse of the current precedence. Minimally, when a basename collision is detected during indexing, log it and prefer the deepest path matching the structure the golden snapshot's own entry used, rather than the shallowest path encountered first in zip iteration order.
