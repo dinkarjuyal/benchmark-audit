@@ -1,15 +1,16 @@
 ---
-title: "APEX-Agents: a same-named decoy file anywhere in the output hides the correct deliverable"
+title: "APEX-Agents: a real scoring bug in a verifier that, as shipped, nothing can select"
 slug: "apex-agents-golden-file-match-basename-collision"
 date: "2026-11-22"
 benchmark: "APEX-Agents"
 benchmarkOwner: "Mercor"
-taxonomyTags: ["grader-strictness", "harness-bugs"]
-severity: "medium"
-summary: "The golden_file_match verifier in Archipelago indexes both the golden snapshot and the agent's output by filename only, with 'shallowest path wins' as the tie-break for duplicate basenames. An agent that produces the fully correct deliverable, plus any unrelated file elsewhere in its workspace that happens to share its filename, gets scored 0.0 instead of 1.0 — the grader never looks at the correct file at all."
+taxonomyTags: ["harness-bugs"]
+severity: "low"
+summary: "Archipelago's golden_file_match verifier has a real, reproducible scoring bug: a same-named decoy file at a shallower path than the correct deliverable silently hides that deliverable, flipping a correct submission's score from 1.0 to 0.0. But in the public mirror, this verifier is imported in registry.py and never added to EVAL_REGISTRY — EvalIds has no GOLDEN_FILE_MATCH member, and every dispatch site resolves exclusively through that registry, so no task config in this codebase can actually select it. The bug is real; its current live impact, as far as this public repo shows, appears to be none."
 evidence:
   - "https://github.com/Mercor-Intelligence/archipelago/blob/0e77c3e135139d5b7bd7e177506cb46a6cc5b0ea/grading/runner/evals/golden_file_match/main.py"
   - "https://github.com/Mercor-Intelligence/archipelago/blob/0e77c3e135139d5b7bd7e177506cb46a6cc5b0ea/grading/runner/evals/registry.py"
+  - "https://github.com/Mercor-Intelligence/archipelago/blob/0e77c3e135139d5b7bd7e177506cb46a6cc5b0ea/grading/runner/evals/models.py"
 outreachStatus: "not_contacted"
 outreachLog: []
 draft: true
@@ -17,7 +18,7 @@ draft: true
 
 ## What's being claimed
 
-This is a follow-up to our [earlier APEX-Agents finding](/posts/apex-agents-filename-exact-match) about the `output_llm` verifier's exact-filename gate. Archipelago, Mercor's open-source harness for APEX-Agents, ships many verifier types beyond `output_llm`. One of them, `golden_file_match`, exists specifically to be *more* forgiving than a raw diff: its own docstring says it supports "multiple valid end states" and normalizes volatile values "to prevent false mismatches from dynamic content." The implicit claim, backed by that docstring, is that a correct deliverable gets matched against the golden file reliably, regardless of incidental differences in the rest of the output.
+This started as a follow-up to our [earlier APEX-Agents finding](/posts/apex-agents-filename-exact-match) about the `output_llm` verifier's exact-filename gate. Archipelago, Mercor's open-source harness for APEX-Agents, ships many verifier types beyond `output_llm`. One of them, `golden_file_match`, exists specifically to be *more* forgiving than a raw diff: its own docstring says it supports "multiple valid end states" and normalizes volatile values "to prevent false mismatches from dynamic content." We set out to test whether a correct deliverable actually gets matched reliably. We found a real bug in the comparison logic — and then found that the comparison logic itself doesn't appear to be reachable by anything in this codebase.
 
 ## What we found
 
@@ -39,18 +40,20 @@ We copied `_index_files_by_basename()` and `_compare_files()` verbatim and ran t
 
 Both trajectories contain the identical, correct `deliverables/output.csv`. The only difference is the presence of a second, unrelated `output.csv` at the workspace root in the first case. That alone flips the score from 1.0 to 0.0: the comparison is run entirely against the root-level decoy, and the actual correct file at `deliverables/output.csv` is never read.
 
-This isn't a hypothetical edge case confined to adversarial inputs. Long-horizon agentic tasks — the entire premise of APEX-Agents — routinely produce incidental files that share a name with a real deliverable: a tool's autosave, a backup copy made before a final edit, a template the agent copied into a scratch location and left in place, an earlier draft it moved rather than deleted. Any of these, if it happens to be shallower in the directory tree than the real output, silently overrides the real output in the eyes of this grader.
+This isn't a hypothetical edge case confined to adversarial inputs. Long-horizon agentic tasks — the entire premise of APEX-Agents — routinely produce incidental files that share a name with a real deliverable: a tool's autosave, a backup copy made before a final edit, a template the agent copied into a scratch location and left in place, an earlier draft it moved rather than deleted. Any of these, if it happens to be shallower in the directory tree than the real output, would silently override the real output in the eyes of this grader — if anything could route a task to it.
+
+**Nothing in this codebase can.** `golden_file_match_eval` is imported once in `registry.py` (line 43) and never referenced again anywhere in the file. `EvalIds` (`grading/runner/evals/models.py`), the `StrEnum` that `EVAL_REGISTRY: dict[EvalIds, EvalDefn]` is keyed on, has no `GOLDEN_FILE_MATCH` member — the closest entry is `GOLDEN_RESPONSE_MATCH`, a different verifier with different (LLM-judge) comparison logic. Every real dispatch site in the runner — `main.py`, `validate.py`, `skip_rules.py` — resolves a task's verifier through `EVAL_REGISTRY[eval_config.eval_defn_id]` or `.get(eval_config.eval_defn_id)`, and `eval_defn_id` is typed as `EvalIds`. There is no string a task config could put in that field that resolves to `golden_file_match_eval`. We also found no test file anywhere in the repo that imports or exercises this module. As far as this public codebase shows, `golden_file_match` is dead code: present, buggy, and currently unreachable by any task.
 
 ## Why it matters
 
-This is scoped to tasks whose verifier config uses `golden_file_match` specifically; other verifier types in Archipelago (`output_llm`, `golden_response_match`, etc.) use different comparison logic and aren't affected by this particular bug. As with our earlier APEX-Agents post, we don't have access to the gated `mercor/apex-agents` dataset, so we can't say what fraction of the 480 tasks route through this verifier.
+The honest headline here is a demotion, not an escalation: we went in expecting a live scoring bug and found a latent one instead. The comparison logic is genuinely broken — we're not walking that part back — but we have no evidence it can fire against a real submission in the form this repo ships. That caps severity hard. We're calling it "low," not "medium" or higher, specifically because the live-impact claim that would justify a higher severity isn't supported by what we can see.
 
-Severity is "medium," matching the bar set by our earlier APEX-Agents finding: the mechanism is capable of converting a fully correct deliverable into a hard 0.0 score, with no partial credit and no signal to the agent or the evaluator about why. It isn't "high," because triggering it requires an incidental basename collision elsewhere in the output, something that won't happen on every task attempt — but it also isn't a contrived scenario, since multi-step agentic workflows are exactly the setting where stray same-named files accumulate. The failure direction only ever penalizes otherwise-correct work; we found no configuration under which this logic inflates a score for an incorrect deliverable.
+Two things keep this from being a non-finding. First, dead verifier code with a real bug in it is still worth fixing before it's ever wired up — the bug doesn't go away by being unreachable, and a future change that adds a `GOLDEN_FILE_MATCH` entry to `EvalIds` would ship this exact failure mode on day one with no additional review likely to catch it, since the function already looks complete and well-documented. Second, this public repository is reportedly a one-way mirror of an internal monorepo (per third-party reporting we have not independently confirmed with Mercor), so we can't rule out that a private registry wires `golden_file_match_eval` into real task configs by some mechanism this mirror doesn't show. We're not asserting that — we checked what we have access to and it says "unreachable" — but we can't certify "zero live impact" either, only "no live-impact path visible from the public source."
 
 ## Response from Mercor
 
-No response as of 2026-11-22; outreach has not yet been attempted.
+No response as of 2026-11-22; outreach has not yet been attempted. Given the open question above, a direct question worth putting to Mercor if outreach happens is simply whether `golden_file_match` is used by any production task, and if so, through what dispatch path.
 
 ## What would fix it
 
-Index both the golden snapshot and the trajectory by full relative path first, falling back to basename-only matching only when a path-exact match isn't found anywhere in the trajectory — the inverse of the current precedence. Minimally, when a basename collision is detected during indexing, log it and prefer the deepest path matching the structure the golden snapshot's own entry used, rather than the shallowest path encountered first in zip iteration order.
+Two independent things, regardless of reachability: (1) fix the comparison bug itself — index both the golden snapshot and the trajectory by full relative path first, falling back to basename-only matching only when a path-exact match isn't found anywhere in the trajectory, the inverse of the current precedence; (2) resolve the dead-code question one way or the other — either wire `golden_file_match` into `EvalIds`/`EVAL_REGISTRY` if it's meant to be used (after fixing the bug above), or remove it if it isn't, rather than leaving working-looking, buggy, untested code sitting in the registry file's import list with no path to execution.
