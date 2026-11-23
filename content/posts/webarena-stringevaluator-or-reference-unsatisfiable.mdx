@@ -1,0 +1,114 @@
+---
+title: "WebArena: one task's reference answer can never be matched, and three sibling tasks disagree about the answer format"
+slug: "webarena-stringevaluator-or-reference-unsatisfiable"
+date: "2026-11-23"
+benchmark: "WebArena"
+benchmarkOwner: "WebArena authors (CMU)"
+taxonomyTags: ["grader-strictness"]
+severity: "low"
+summary: "Task 386's reference is must_include [\"65 |OR| 3\"], but StringEvaluator never splits on |OR|, so the only answer that scores is the literal text \"65 |OR| 3\"; the correct answers \"3\" and \"65%\" both score 0. Separately, tasks 293-295 and 296-297 ask for the same thing (\"the command to clone X with SSH\") but their exact_match references require opposite answer forms."
+evidence:
+  - "https://github.com/web-arena-x/webarena/blob/dce04686a56253aefba7b18a4fa0937cf1dc987b/evaluation_harness/evaluators.py"
+  - "https://github.com/web-arena-x/webarena/blob/dce04686a56253aefba7b18a4fa0937cf1dc987b/config_files/test.raw.json"
+outreachStatus: "not_contacted"
+outreachLog: []
+draft: true
+---
+
+## What's being claimed
+
+[WebArena](https://github.com/web-arena-x/webarena) scores web agents on 812 tasks. For tasks with a textual answer, `StringEvaluator` checks the agent's final answer against the task's `reference_answers` using `exact_match`, `must_include` (every listed phrase must appear in the answer) or an LLM-judged `fuzzy_match`. A task's score is meant to say whether the agent got the answer right.
+
+## What we found
+
+We did not run the web apps or any model. We took `StringEvaluator` verbatim out of `evaluation_harness/evaluators.py` (with `ast`, so nothing is retyped; only `beartype` and `word_tokenize` are stubbed, and `word_tokenize` is only used for one-character references) at commit `dce04686a56253aefba7b18a4fa0937cf1dc987b` (the default branch as of this run), and scored candidate answers against the shipped `config_files/test.raw.json`.
+
+```python
+# usage: python3 -I repro_webarena.py <path to webarena checkout @ dce0468>
+# Pulls StringEvaluator verbatim out of evaluators.py with ast (the module's
+# heavy imports are stubbed; only beartype and nltk.word_tokenize are needed
+# by the code paths exercised here), then scores candidate answers against the
+# shipped reference_answers in config_files/test.raw.json.
+import ast, json, re, sys
+root = sys.argv[1]
+src = open(root + "/evaluation_harness/evaluators.py").read()
+cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "StringEvaluator")
+code = ast.get_source_segment(src, cls)
+class Evaluator: pass
+ns = {"Evaluator": Evaluator, "beartype": lambda f: f,
+      "word_tokenize": lambda s: re.findall(r"\w+|[^\w\s]", s),  # only used for 1-char refs
+      "Path": object, "Trajectory": object, "Page": object, "PseudoPage": object, "CDPSession": object}
+exec(code, ns)
+SE = ns["StringEvaluator"]
+tasks = json.load(open(root + "/config_files/test.raw.json"))
+def must(i, pred):
+    refs = tasks[i]["eval"]["reference_answers"]["must_include"]
+    return min(SE.must_include(ref=r, pred=SE.clean_answer(pred), tokenize=(len(refs) == 1)) for r in refs)
+def exact(i, pred):
+    return SE.exact_match(ref=tasks[i]["eval"]["reference_answers"]["exact_match"], pred=SE.clean_answer(pred))
+print("tasks:", len(tasks))
+n_or = [t["task_id"] for t in tasks if t["eval"].get("reference_answers") and "|OR|" in json.dumps(t["eval"]["reference_answers"])]
+print("tasks with |OR| inside reference_answers:", n_or)
+print("evaluators.py lines containing '|OR|':", [i + 1 for i, l in enumerate(src.splitlines()) if "|OR|" in l])
+t = tasks[386]
+print("\n[386] intent:", t["intent"]); print("[386] reference_answers:", json.dumps(t["eval"]["reference_answers"]))
+print("[386] raw annotation:", t["eval"].get("reference_answer_raw_annotation"))
+for a in ["3", "3 stars", "65", "65%", "The rating is 65% (about 3 stars)", "65 |OR| 3"]:
+    print(f"[386] answer {a!r:40} -> {must(386, a)}")
+print()
+for i in (293, 294, 295, 296, 297):
+    ref = tasks[i]["eval"]["reference_answers"]["exact_match"]
+    url = ref[len("git clone "):] if ref.startswith("git clone ") else ref
+    print(f"[{i}] {tasks[i]['intent']}\n      exact_match ref: {ref}")
+    print(f"      bare url -> {exact(i, url)}; 'git clone <url>' -> {exact(i, 'git clone ' + url)}")
+```
+
+```
+tasks: 812
+tasks with |OR| inside reference_answers: [386]
+evaluators.py lines containing '|OR|': [213, 316]
+
+[386] intent: What is the rating of Ugreen lightning to 3.5mm cable. Please round to the nearest whole number
+[386] reference_answers: {"must_include": ["65 |OR| 3"]}
+[386] raw annotation: Around 3.1 stars
+[386] answer '3'                                      -> 0.0
+[386] answer '3 stars'                                -> 0.0
+[386] answer '65'                                     -> 0.0
+[386] answer '65%'                                    -> 0.0
+[386] answer 'The rating is 65% (about 3 stars)'      -> 0.0
+[386] answer '65 |OR| 3'                              -> 1.0
+
+[293] Show me the command to clone Super_Awesome_Robot with SSH.
+      exact_match ref: git clone ssh://git@metis.lti.cs.cmu.edu:2222/convexegg/super_awesome_robot.git
+      bare url -> 0.0; 'git clone <url>' -> 1.0
+[294] Show me the command to clone ChatGPT with SSH.
+      exact_match ref: git clone ssh://git@metis.lti.cs.cmu.edu:2222/convexegg/chatgpt.git
+      bare url -> 0.0; 'git clone <url>' -> 1.0
+[295] Show me the command to clone metaseq with SSH.
+      exact_match ref: git clone ssh://git@metis.lti.cs.cmu.edu:2222/root/metaseq.git
+      bare url -> 0.0; 'git clone <url>' -> 1.0
+[296] Show me the command to clone the best GAN python implementation with SSH.
+      exact_match ref: ssh://git@metis.lti.cs.cmu.edu:2222/eriklindernoren/PyTorch-GAN.git
+      bare url -> 1.0; 'git clone <url>' -> 0.0
+[297] Show me the command to clone the most stared Covid location tracker with SSH.
+      exact_match ref: ssh://git@metis.lti.cs.cmu.edu:2222/yjlou/2019-nCov.git
+      bare url -> 1.0; 'git clone <url>' -> 0.0
+```
+
+**Task 386: the reference cannot be matched by a correct answer.** The intent asks for the rating of a cable, rounded to a whole number, and the annotator's raw answer is "Around 3.1 stars". The reference is `{"must_include": ["65 |OR| 3"]}`. The `|OR|` convention is handled in the URL and HTML evaluators (`evaluators.py` lines 213 and 316), but `StringEvaluator.must_include` is a plain `clean_ref in clean_pred` substring test and never splits on it. So the phrase that must appear is the literal text `65 |or| 3`. In the run above `3`, `3 stars`, `65`, `65%` and a sentence containing both `65%` and `3 stars` all score 0.0; only the answer `65 |OR| 3` scores 1.0. This is the only task out of 812 with `|OR|` inside `reference_answers`.
+
+**Tasks 293-297: the same question, opposite required answer forms.** All five intents have the shape "Show me the command to clone `REPO` with SSH." Tasks 293, 294 and 295 have `exact_match` references that begin with `git clone `, so the bare SSH URL scores 0.0. Tasks 296 and 297 have references that are the bare URL, so the full command `git clone <url>` scores 0.0. An agent that answers the same way on all five cannot pass all five, and which form a correct agent "should" give is not stated in the task. (`exact_match` is deliberately strict, and the docstring calls it "exact match", so we are not claiming strictness itself is the bug; the inconsistency among near-identical sibling tasks is.)
+
+**Things we looked at and are not claiming.** `must_include` is a substring test, so a number like `16` also matches `116`; that is how the evaluator is documented to behave and the authors added a tokenizer guard for the single-character case, so we treat it as by design. We did not measure how often real agents produce answers affected by it. The 36 "N/A" tasks and the 82 `fuzzy_match` tasks go through an LLM judge, which we did not run. We also have not checked whether the released Hugging Face copy of the data differs from this file, because that host is not reachable from our environment.
+
+## Why it matters
+
+Severity is **low**, argued from scope: one task (386) is unmatchable by a correct answer, and two more (296, 297) disagree with their three siblings about format. That is 3 of 812 tasks, about 0.4%, so no headline number moves on this alone, and for 296/297 an agent that happens to guess the bare-URL form passes. We did not score any model on these tasks. What it shows is that the string scorer and its data are not always written to the same convention, and that a single task is affected in the strongest sense.
+
+## Response from WebArena authors
+
+No response yet: outreach has not been sent. This post is a draft pending that step; see `outreachStatus` in the frontmatter.
+
+## What would fix it
+
+For task 386, either split `must_include` references on `" |OR| "` in `StringEvaluator` (the way the URL evaluator does) or rewrite the reference to a single phrase an agent can be expected to produce. For 296 and 297, make the references consistent with 293-295 (add `git clone `), or normalise away a leading `git clone ` in `exact_match` for these tasks. A cheap guard is a data check that fails when a `reference_answers` string contains `|OR|` for an evaluator that does not handle it.
